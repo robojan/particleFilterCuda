@@ -50,19 +50,19 @@ float z_update[N];
 float x_p[N];
 float p_w[N];
 float cumsum[N];
-float randomProcessData[(N + 1) * T];
+float randomProcessData[N];
 float randomUniformData[N];
 
 float real[T];
 float est[T];
 
 __global__ void genWeights(int t, float z, float x_R, float *randomProcess, float *x_p, float *z_update, float *x_p_update, float *p_w) {
-	int id =  blockIdx.x * blockDim.x + threadIdx.x;
+	int id =  threadIdx.y * blockDim.x + threadIdx.x;
 	extern __shared__ float s[];
 	float sum = 0.0f;
 	if (id * ELEMENTS_PER_THREAD < N) {
 		s[id] = 0.0f;
-		for (int i = id * ELEMENTS_PER_THREAD; i < N && i < id + ELEMENTS_PER_THREAD; i++) {
+		for (int i = id * ELEMENTS_PER_THREAD; i < N && i < (id + 1) * ELEMENTS_PER_THREAD; i++) {
 #ifdef NOISE
 			float update = 0.5f*x_p[i] + 25 * x_p[i] / (1 + x_p[i] * x_p[i]) + 8 * cosf(1.2f*t) + randomProcess[i];
 #else
@@ -78,23 +78,24 @@ __global__ void genWeights(int t, float z, float x_R, float *randomProcess, floa
 	__syncthreads();
 	// Calculate sum
 	if (id == 0) {
-		for (int i = 0; i < N / ELEMENTS_PER_THREAD; i++) {
-			sum += s[id];
+		for (int i = 0; i * ELEMENTS_PER_THREAD < N ; i++) {
+			sum += s[i];
 		}
+		s[0] = sum;
 	}
 	// Normalize
 	__syncthreads();
 	if (id * ELEMENTS_PER_THREAD < N) {
-		for (int i = id * ELEMENTS_PER_THREAD; i < N && i < id + ELEMENTS_PER_THREAD; i++) {
-			p_w[i] = p_w[i] / sum;
+		for (int i = id * ELEMENTS_PER_THREAD; i < N && i < (id + 1) * ELEMENTS_PER_THREAD; i++) {
+			p_w[i] = p_w[i] / s[0];
 		}
 	}
 }
 
 __global__ void partialSum(float *data, int number, float *result) {
-	int id = blockIdx.x * blockDim.x + threadIdx.x;
+	int id = threadIdx.y * blockDim.x + threadIdx.x;
 	if (id * ELEMENTS_PER_THREAD < number) {
-		for (int i = id * ELEMENTS_PER_THREAD; i < number && i < id + ELEMENTS_PER_THREAD; i++) {
+		for (int i = id * ELEMENTS_PER_THREAD; i < number && i < (id + 1) * ELEMENTS_PER_THREAD; i++) {
 			float sum = 0;
 			for (int j = 0; j <= i; j++){
 				sum += data[j];
@@ -105,12 +106,12 @@ __global__ void partialSum(float *data, int number, float *result) {
 }
 
 __global__ void resample(float *random, float *sum, float *cumsum, float *x_p, float *x_p_update) {
-	int id = blockIdx.x * blockDim.x + threadIdx.x;
+	int id = threadIdx.y * blockDim.x + threadIdx.x;
 	extern __shared__ float s [];
 	*sum = 0.0f;
 	if (id * ELEMENTS_PER_THREAD < N) {
 		s[id] = 0.0f;
-		for (int i = id * ELEMENTS_PER_THREAD; i < N && i < id + ELEMENTS_PER_THREAD; i++) {
+		for (int i = id * ELEMENTS_PER_THREAD; i < N && i < (id + 1) * ELEMENTS_PER_THREAD; i++) {
 			for (int j = 0; j < N; j++) {
 				if (random[i] <= cumsum[j]) {
 					x_p[i] = x_p_update[j];
@@ -124,7 +125,7 @@ __global__ void resample(float *random, float *sum, float *cumsum, float *x_p, f
 	// Calculate sum
 	if (id == 0) {
 		for (int i = 0; i < N / ELEMENTS_PER_THREAD; i++) {
-			*sum += s[id];
+			*sum += s[i];
 		}
 	}
 }
@@ -154,11 +155,17 @@ int main()
 
 	float V = 10;
 
-	int blocks = (N + THREADS_PER_BLOCK -1) / (THREADS_PER_BLOCK * ELEMENTS_PER_THREAD);
-	int threads = THREADS_PER_BLOCK;
+	dim3 blocks = dim3(1, 1, 1);
+	dim3 threads = dim3(THREADS_PER_BLOCK,
+						(N + THREADS_PER_BLOCK * ELEMENTS_PER_THREAD - 1) / (THREADS_PER_BLOCK * ELEMENTS_PER_THREAD), 1);
+	int sharedMemSize = sizeof(float) * (N + ELEMENTS_PER_THREAD - 1) / ELEMENTS_PER_THREAD;
 
-	std::random_device rd;
-	std::mt19937 generator(rd());
+	// Random seed
+	//std::random_device rd;
+	//int seed = rd();
+	// Fixed seed
+	int seed = 1234;
+	std::mt19937 generator(seed);
 	std::normal_distribution<float> normal_start(0, V);
 	std::normal_distribution<float> normal_process(0, x_N);
 	std::normal_distribution<float> normal_meas(0, x_R);
@@ -193,12 +200,20 @@ int main()
 		}
 		cudaMemcpy(d_randomProcessData, randomProcessData, sizeof(float) * N, cudaMemcpyHostToDevice);
 
-		int sharedMemSize = sizeof(float) * (N + ELEMENTS_PER_THREAD - 1) / ELEMENTS_PER_THREAD;
 		genWeights << <blocks, threads, sharedMemSize >> >(t, z, x_R, d_randomProcessData, 
 														   d_x_p, d_z_update, d_x_p_update, d_p_w);
+#ifdef _DEBUG
+		cudaMemcpy(x_p, d_x_p, sizeof(float) * N, cudaMemcpyDeviceToHost);
+		cudaMemcpy(x_p_update, d_x_p_update, sizeof(float) * N, cudaMemcpyDeviceToHost);
+		cudaMemcpy(z_update, d_z_update, sizeof(float) * N, cudaMemcpyDeviceToHost);
+		cudaMemcpy(p_w, d_p_w, sizeof(float) * N, cudaMemcpyDeviceToHost);
+#endif
 		nvtxRangePop();
 		nvtxRangePush("Resampling");
-		partialSum <<<blocks, threads >>>(d_p_w, N, d_cumsum);
+		partialSum << <blocks, threads >> >(d_p_w, N, d_cumsum);
+#ifdef _DEBUG
+		cudaMemcpy(cumsum, d_cumsum, sizeof(float) * N, cudaMemcpyDeviceToHost);
+#endif
 		// Create random data for resampling
 		for (int i = 0; i < N; i++) {
 			randomUniformData[i] = uniform_resamp(generator);
@@ -207,6 +222,9 @@ int main()
 		resample << <blocks, threads, sharedMemSize >> >(d_randomUniformData, d_sum, d_cumsum, d_x_p, d_x_p_update);
 		float sum;
 		cudaMemcpy(&sum, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
+#ifdef _DEBUG
+		cudaMemcpy(x_p, d_x_p, sizeof(float) * N, cudaMemcpyDeviceToHost);
+#endif
 		nvtxRangePop();
 		est[t] = x_est;
 		x_est = sum / N;
