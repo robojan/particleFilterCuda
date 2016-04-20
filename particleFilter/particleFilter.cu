@@ -55,6 +55,39 @@ float randomUniformData[N];
 
 float real[T];
 float est[T];
+nvtxEventAttributes_t markInit;
+nvtxEventAttributes_t markGen;
+nvtxEventAttributes_t markWeigh;
+nvtxEventAttributes_t markNormalize;
+nvtxEventAttributes_t markResample;
+
+void initMarkers() {
+	markInit.version = NVTX_VERSION;
+	markInit.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
+	markInit.category = 0;
+	markInit.color = 0xFF880000;
+	markInit.colorType = NVTX_COLOR_ARGB;
+	markInit.message.ascii = "Initializing";
+	markInit.messageType = NVTX_MESSAGE_TYPE_ASCII;
+	markInit.payload.llValue = 0;
+	markInit.payloadType = NVTX_PAYLOAD_TYPE_INT64;
+	markInit.reserved0 = 0;
+	markGen = markInit;
+	markGen.message.ascii = "Generating Particles";
+	markWeigh = markInit;
+	markWeigh.message.ascii = "Generating weights";
+	markWeigh.color = 0xFF00FF00;
+	markWeigh.payload.llValue = 1;
+	markNormalize = markInit;
+	markNormalize.message.ascii = "Normalizing";
+	markNormalize.color = 0xFF0000FF;
+	markNormalize.payload.llValue = 2;
+	markResample = markInit;
+	markResample.message.ascii = "Resampling";
+	markResample.color = 0xFF00FFFF;
+	markResample.payload.llValue = 3;
+
+}
 
 __global__ void genWeights(int t, float z, float x_R, float *randomProcess, float *x_p, float *z_update, float *x_p_update, float *p_w) {
 	int id =  threadIdx.y * blockDim.x + threadIdx.x;
@@ -132,9 +165,10 @@ __global__ void resample(float *random, float *sum, float *cumsum, float *x_p, f
 
 int main()
 {
+	initMarkers();
 	nvtxNameOsThread(GetCurrentThreadId(), "MAIN" );
 	nvtxRangePush(__FUNCTION__ SETTINGSSTRING);
-	nvtxRangePush("Initializing");
+	nvtxRangePushEx(&markInit);
 	cudaProfilerStart();
 	
 	// Init CUDA
@@ -173,7 +207,7 @@ int main()
 	
 	float z_out = x*x / 20 + normal_meas(generator);
 	float x_est = x;
-	nvtxRangePush("GenParticles");
+	nvtxRangePushEx(&markGen);
 	for (int i = 0; i < N; i++) {
 		x_p[i] = x + normal_start(generator);
 	}
@@ -193,23 +227,25 @@ int main()
 		x = 0.5f*x + 25 * x / (1 + x*x) + 8 * cosf(1.2f*t);
 		z = x*x / 20;
 #endif
-		nvtxRangePush("Update");
+		//nvtxRangePush("Update");
 		// Create random data for genWeights
 		for (int i = 0; i < N; i++) {
 			randomProcessData[i] = normal_process(generator);
 		}
 		cudaMemcpy(d_randomProcessData, randomProcessData, sizeof(float) * N, cudaMemcpyHostToDevice);
 
+		nvtxRangePushEx(&markWeigh);
 		genWeights << <blocks, threads, sharedMemSize >> >(t, z, x_R, d_randomProcessData, 
 														   d_x_p, d_z_update, d_x_p_update, d_p_w);
+		nvtxRangePop();
 #ifdef _DEBUG
 		cudaMemcpy(x_p, d_x_p, sizeof(float) * N, cudaMemcpyDeviceToHost);
 		cudaMemcpy(x_p_update, d_x_p_update, sizeof(float) * N, cudaMemcpyDeviceToHost);
 		cudaMemcpy(z_update, d_z_update, sizeof(float) * N, cudaMemcpyDeviceToHost);
 		cudaMemcpy(p_w, d_p_w, sizeof(float) * N, cudaMemcpyDeviceToHost);
 #endif
-		nvtxRangePop();
-		nvtxRangePush("Resampling");
+		//nvtxRangePop();
+		nvtxRangePushEx(&markResample);
 		partialSum << <blocks, threads >> >(d_p_w, N, d_cumsum);
 #ifdef _DEBUG
 		cudaMemcpy(cumsum, d_cumsum, sizeof(float) * N, cudaMemcpyDeviceToHost);
