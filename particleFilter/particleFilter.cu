@@ -37,11 +37,46 @@ float cumsum[N];
 float real[T];
 float est[T];
 
+nvtxEventAttributes_t markInit;
+nvtxEventAttributes_t markGen;
+nvtxEventAttributes_t markWeigh;
+nvtxEventAttributes_t markNormalize;
+nvtxEventAttributes_t markResample;
+
+void initMarkers() {
+	markInit.version = NVTX_VERSION;
+	markInit.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
+	markInit.category = 0;
+	markInit.color = 0xFF880000;
+	markInit.colorType = NVTX_COLOR_ARGB;
+	markInit.message.ascii = "Initializing";
+	markInit.messageType = NVTX_MESSAGE_TYPE_ASCII;
+	markInit.payload.llValue = 0;
+	markInit.payloadType = NVTX_PAYLOAD_TYPE_INT64;
+	markInit.reserved0 = 0;
+	markGen = markInit;
+	markGen.message.ascii = "Generating Particles";
+	markWeigh = markInit;
+	markWeigh.message.ascii = "Generating weights";
+	markWeigh.color = 0xFF00FF00;
+	markWeigh.payload.llValue = 1;
+	markNormalize = markInit;
+	markNormalize.message.ascii = "Normalizing";
+	markNormalize.color = 0xFF0000FF;
+	markNormalize.payload.llValue = 2;
+	markResample = markInit;
+	markResample.message.ascii = "Resampling";
+	markResample.color = 0xFF00FFFF;
+	markResample.payload.llValue = 3;
+
+}
+
 int main()
 {
+	initMarkers();
 	nvtxNameOsThread(GetCurrentThreadId(), "MAIN" );
 	nvtxRangePush(__FUNCTION__ SETTINGSSTRING);
-	nvtxRangePush("Initializing");
+	nvtxRangePushEx(&markInit);
 	//cudaProfilerStart();
 	// Init CUDA
 
@@ -63,7 +98,7 @@ int main()
 
 	float z_out = x*x / 20 + normal_meas(generator);
 	float x_est = x;
-	nvtxRangePush("GenParticles");
+	nvtxRangePushEx(&markGen);
 	for (int i = 0; i < N; i++) {
 		x_p[i] = x + normal_start(generator);
 	}
@@ -81,8 +116,8 @@ int main()
 		z = x*x / 20;
 #endif
 		sum = 0.0f;
-		nvtxRangePush("Update");
-		nvtxRangePush("GenWeights");
+		//nvtxRangePush("Update");
+		nvtxRangePushEx(&markWeigh);
 		for (int i = 0; i < N; i++) {
 #ifdef NOISE
 			x_p_update[i] = 0.5f*x_p[i] + 25 * x_p[i] / (1 + x_p[i] * x_p[i]) + 8 * cosf(1.2f*t) + normal_process(generator);
@@ -94,19 +129,19 @@ int main()
 			sum = sum + p_w[i];
 		}
 		nvtxRangePop();
-		nvtxRangePush("Normalize");
+		nvtxRangePushEx(&markNormalize);
 		for (int i = 0; i < N; i++) 
 		{
 			p_w[i] = p_w[i] / sum;
 		}
 		nvtxRangePop();
-		nvtxRangePop();
-		nvtxRangePush("Resampling");
+		//nvtxRangePop();
+		nvtxRangePushEx(&markResample);
 		std::partial_sum(p_w, p_w + N, cumsum);
 		sum = 0.0f;
 		for (int i = 0; i < N; i++) {
 			float uniform = uniform_resamp(generator);
-			nvtxRangePush("FindRand");
+			//nvtxRangePush("FindRand");
 			for (int j = 0; j < N; j++) {
 				if (uniform <= cumsum[j]) {
 					x_p[i] = x_p_update[j];
@@ -114,7 +149,7 @@ int main()
 					break;
 				}
 			}
-			nvtxRangePop();
+			//nvtxRangePop();
 		}
 		nvtxRangePop();
 		est[t] = x_est;
