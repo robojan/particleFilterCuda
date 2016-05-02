@@ -41,6 +41,7 @@ nvtxEventAttributes_t markInit;
 nvtxEventAttributes_t markGen;
 nvtxEventAttributes_t markWeigh;
 nvtxEventAttributes_t markNormalize;
+nvtxEventAttributes_t markCumsum;
 nvtxEventAttributes_t markResample;
 
 void initMarkers() {
@@ -64,10 +65,14 @@ void initMarkers() {
 	markNormalize.message.ascii = "Normalizing";
 	markNormalize.color = 0xFF0000FF;
 	markNormalize.payload.llValue = 2;
+	markCumsum = markInit;
+	markCumsum.message.ascii = "Cumulative sum";
+	markCumsum.color = 0xFF00FFFF;
+	markCumsum.payload.llValue = 3;
 	markResample = markInit;
 	markResample.message.ascii = "Resampling";
-	markResample.color = 0xFF00FFFF;
-	markResample.payload.llValue = 3;
+	markResample.color = 0xFFFF00FF;
+	markResample.payload.llValue = 4;
 
 }
 
@@ -125,7 +130,7 @@ int main()
 			x_p_update[i] = 0.5f*x_p[i] + 25 * x_p[i] / (1 + x_p[i] * x_p[i]) + 8 * cosf(1.2f*t);
 #endif
 			z_update[i] = x_p_update[i] * x_p_update[i] / 20;
-			p_w[i] = (1 / sqrtf(2 * M_PI * x_R)) * exp(-1 * powf(z - z_update[i], 2) / (2 * x_R));
+			p_w[i] = (1 / sqrtf(2 * (float)M_PI * x_R)) * expf(-1 * powf(z - z_update[i], 2) / (2 * x_R));
 			sum = sum + p_w[i];
 		}
 		nvtxRangePop();
@@ -136,8 +141,10 @@ int main()
 		}
 		nvtxRangePop();
 		//nvtxRangePop();
-		nvtxRangePushEx(&markResample);
+		nvtxRangePushEx(&markCumsum);
 		std::partial_sum(p_w, p_w + N, cumsum);
+		nvtxRangePop();
+		nvtxRangePushEx(&markResample);
 		sum = 0.0f;
 		for (int i = 0; i < N; i++) {
 			float uniform = uniform_resamp(generator);
