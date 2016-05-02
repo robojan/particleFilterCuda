@@ -1,5 +1,5 @@
 <?xml version="1.0"?>
-<session version="2" name="ProfileOrig.nvpr" hscale="0.0014256045609065888">
+<session version="2" name="ProfileOrig.nvpr" hscale="8.199792148429046E-6">
 <executable file="D:\Dropbox\TUE\BEP\cuda\particleFilter\x64\Release\particleFilter.exe" timestamp="1461158636150" profileonstart="true" concurrentkernels="true" apitrace="true" environmentprofiling="false" uvmprofiling="false"><envs></envs><multiProcess type="0" rumMPS="false"/></executable>
 <expert><columnprops></columnprops>
 </expert>

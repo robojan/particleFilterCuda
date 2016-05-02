@@ -46,6 +46,7 @@
     <Property Name="EnableCudaRuntimeApiUnifiedAddressing" Value="True" />
     <Property Name="EnableCudaRuntimeApiVersionManagement" Value="True" />
     <Property Name="EnableCudaSoftwareCounters" Value="True" />
+    <Property Name="EnableCudaTrace" Value="True" />
     <Property Name="EnableDirectXApiBlit" Value="True" />
     <Property Name="EnableDirectXApiClear" Value="True" />
     <Property Name="EnableDirectXApiCommandList" Value="True" />

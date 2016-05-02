@@ -14,6 +14,7 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <cassert>
 #include <Windows.h>
 
 #ifdef __INTELLISENSE__
@@ -23,10 +24,14 @@ void __syncthreads();
 #define NOISE
 #define M_PI 3.14159265359
 
+//#define COPY_DATA_BACK 1
+
 #define T 200
 #define N 10000
 #define THREADS_PER_BLOCK 256
 #define ELEMENTS_PER_THREAD 32
+
+#define THREADS_SUM 256
 
 #define XSTR(s) STR(s)
 #define STR(s) #s
@@ -125,7 +130,7 @@ __global__ void genWeights(int t, float z, float x_R, float *randomProcess, floa
 	}
 }
 
-__global__ void partialSum(float *data, int number, float *result) {
+__global__ void cumulativeSum(float *data, int number, float *result) {
 	int id = threadIdx.y * blockDim.x + threadIdx.x;
 	if (id * ELEMENTS_PER_THREAD < number) {
 		for (int i = id * ELEMENTS_PER_THREAD; i < number && i < (id + 1) * ELEMENTS_PER_THREAD; i++) {
@@ -138,29 +143,82 @@ __global__ void partialSum(float *data, int number, float *result) {
 	}
 }
 
-__global__ void resample(float *random, float *sum, float *cumsum, float *x_p, float *x_p_update) {
-	int id = threadIdx.y * blockDim.x + threadIdx.x;
-	extern __shared__ float s [];
-	*sum = 0.0f;
-	if (id * ELEMENTS_PER_THREAD < N) {
-		s[id] = 0.0f;
-		for (int i = id * ELEMENTS_PER_THREAD; i < N && i < (id + 1) * ELEMENTS_PER_THREAD; i++) {
-			for (int j = 0; j < N; j++) {
-				if (random[i] <= cumsum[j]) {
-					x_p[i] = x_p_update[j];
-					s[id] += x_p[i];
-					break;
-				}
+__device__ void SearchFirst(float *data, float value, int *start, int *end, int id, int numThreads) {
+	int dataLen = *end - *start + 1;
+	int searchSize = (dataLen + numThreads - 1) / numThreads;
+	int threadStart = *start + searchSize * id;
+	int threadEnd = threadStart + searchSize;
+
+	if (threadStart >= *end)	return;
+	if (threadEnd > *end) threadEnd = *end;
+
+	if (data[threadStart] <= value && data[threadEnd] > value) {
+		*start = threadStart;
+		*end = threadEnd;
+	}
+}
+
+__global__ void resample(float *random, float *cumsum, float *x_p, float *x_p_update) {
+	int particleId = blockIdx.x;
+	int id = threadIdx.x;
+	__shared__ int start, end;
+	if (particleId < N) {
+		float searchValue = random[particleId];
+		int correctIdx = -1;
+		/*int correctIdxCheck = N - 1;
+		for (int j = 0; j < N; j++) {
+			if (searchValue <= cumsum[j]) {
+				correctIdxCheck = j;
+				break;
+			}
+		}*/
+		if (id == 0) {
+			start = 0;
+			end = N - 1;
+			// Rare case when there is no particle that fullfills the condition
+			if (searchValue >= cumsum[end]) {
+				start = end - 1;
+			}
+			else if (searchValue < cumsum[start]) {
+				end = start + 1;
 			}
 		}
-	}
-	__syncthreads();
-	// Calculate sum
-	if (id == 0) {
-		for (int i = 0; i < N / ELEMENTS_PER_THREAD; i++) {
-			*sum += s[i];
+		__syncthreads();
+		while (start != end-1) {
+			SearchFirst(cumsum, searchValue, &start, &end, id, blockDim.x);
+			__syncthreads();
+		}
+		if (id == 0) {
+			if (cumsum[start] >= searchValue) {
+				correctIdx = start;
+			}
+			else {
+				correctIdx = end;
+			}
+			//assert(correctIdx == correctIdxCheck);
+			x_p[particleId] = x_p_update[correctIdx];
 		}
 	}
+}
+
+__global__ void sum(const float *data, int size, float *result) {
+	extern __shared__ float partSum[];
+	int id = threadIdx.x;
+	int numThreads = blockDim.x;
+	partSum[id] = 0.0f;
+	int pos = id;
+	while (pos < size) {
+		partSum[id] += data[pos];
+		pos += numThreads;
+	}
+	__syncthreads();
+	do {
+		numThreads /= 2;
+		if (id >= numThreads) return;
+		partSum[id] = partSum[id] + partSum[id + numThreads];
+		__syncthreads();
+	} while (numThreads > 1);
+	*result = partSum[0];
 }
 
 int main()
@@ -238,7 +296,7 @@ int main()
 		genWeights << <blocks, threads, sharedMemSize >> >(t, z, x_R, d_randomProcessData, 
 														   d_x_p, d_z_update, d_x_p_update, d_p_w);
 		nvtxRangePop();
-#ifdef _DEBUG
+#ifdef COPY_DATA_BACK
 		cudaMemcpy(x_p, d_x_p, sizeof(float) * N, cudaMemcpyDeviceToHost);
 		cudaMemcpy(x_p_update, d_x_p_update, sizeof(float) * N, cudaMemcpyDeviceToHost);
 		cudaMemcpy(z_update, d_z_update, sizeof(float) * N, cudaMemcpyDeviceToHost);
@@ -246,8 +304,9 @@ int main()
 #endif
 		//nvtxRangePop();
 		nvtxRangePushEx(&markResample);
-		partialSum << <blocks, threads >> >(d_p_w, N, d_cumsum);
-#ifdef _DEBUG
+
+		cumulativeSum << <blocks, threads >> >(d_p_w, N, d_cumsum);
+#ifdef COPY_DATA_BACK
 		cudaMemcpy(cumsum, d_cumsum, sizeof(float) * N, cudaMemcpyDeviceToHost);
 #endif
 		// Create random data for resampling
@@ -255,10 +314,12 @@ int main()
 			randomUniformData[i] = uniform_resamp(generator);
 		}
 		cudaMemcpy(d_randomUniformData, randomUniformData, sizeof(float) * N, cudaMemcpyHostToDevice);
-		resample << <blocks, threads, sharedMemSize >> >(d_randomUniformData, d_sum, d_cumsum, d_x_p, d_x_p_update);
+		resample << <N, 32 >> >(d_randomUniformData, d_cumsum, d_x_p, d_x_p_update);
+		int sharedMemSumSize = THREADS_SUM * sizeof(float);
+		sum << <1, THREADS_SUM, sharedMemSumSize >> >(d_x_p, N, d_sum);
 		float sum;
 		cudaMemcpy(&sum, d_sum, sizeof(float), cudaMemcpyDeviceToHost);
-#ifdef _DEBUG
+#ifdef COPY_DATA_BACK
 		cudaMemcpy(x_p, d_x_p, sizeof(float) * N, cudaMemcpyDeviceToHost);
 #endif
 		nvtxRangePop();
