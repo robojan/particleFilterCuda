@@ -171,9 +171,13 @@ copy "$(NVTOOLSEXT_PATH)\bin\$(Platform)\nvToolsExt*.dll" "$(OutDir)"</Command>
     </CudaCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <CudaCompile Include="cumulativeSum.cu" />
     <CudaCompile Include="particleFilter.cu">
       <GPUDebugInfo Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</GPUDebugInfo>
     </CudaCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="cumulativeSum.cuh" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

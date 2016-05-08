@@ -1,4 +1,6 @@
 
+#include "cumulativeSum.cuh"
+
 #include <cuda_runtime.h>
 #include <device_launch_parameters.h>
 #include <cuda_profiler_api.h>
@@ -24,7 +26,7 @@ void __syncthreads();
 #define NOISE
 #define M_PI 3.14159265359
 
-//#define COPY_DATA_BACK 1
+#define COPY_DATA_BACK 1
 
 #define T 200
 #define N 10000
@@ -130,19 +132,6 @@ __global__ void genWeights(int t, float z, float x_R, float *randomProcess, floa
 	}
 }
 
-__global__ void cumulativeSum(float *data, int number, float *result) {
-	int id = threadIdx.y * blockDim.x + threadIdx.x;
-	if (id * ELEMENTS_PER_THREAD < number) {
-		for (int i = id * ELEMENTS_PER_THREAD; i < number && i < (id + 1) * ELEMENTS_PER_THREAD; i++) {
-			float sum = 0;
-			for (int j = 0; j <= i; j++){
-				sum += data[j];
-			}
-			result[i] = sum;
-		}
-	}
-}
-
 __device__ void SearchFirst(float *data, float value, int *start, int *end, int id, int numThreads) {
 	int dataLen = *end - *start + 1;
 	int searchSize = (dataLen + numThreads - 1) / numThreads;
@@ -221,6 +210,8 @@ __global__ void sum(const float *data, int size, float *result) {
 	*result = partSum[0];
 }
 
+
+
 int main()
 {
 	initMarkers();
@@ -235,11 +226,12 @@ int main()
 	cudaMalloc<float>(&d_z_update, sizeof(float) * N);
 	cudaMalloc<float>(&d_x_p, sizeof(float) * N);
 	cudaMalloc<float>(&d_p_w, sizeof(float) * N);
-	cudaMalloc<float>(&d_cumsum, sizeof(float) * N);
+	cudaMalloc<float>(&d_cumsum, sizeof(float) * (N + 1));
 	cudaMalloc<float>(&d_randomProcessData, sizeof(float) * N);
 	cudaMalloc<float>(&d_randomUniformData, sizeof(float) * N);
 	cudaMalloc<float>(&d_sum, sizeof(float));
-
+	cumulativeSumInit();
+	
 	float x = 0.1f;
 	float z;
 	float x_N = 1;
@@ -305,16 +297,17 @@ int main()
 		//nvtxRangePop();
 		nvtxRangePushEx(&markResample);
 
-		cumulativeSum << <blocks, threads >> >(d_p_w, N, d_cumsum);
+		//cumulativeSum << <blocks, threads >> >(d_p_w, N, d_cumsum);
+		cumulativeSum(d_p_w, d_cumsum, N);
 #ifdef COPY_DATA_BACK
-		cudaMemcpy(cumsum, d_cumsum, sizeof(float) * N, cudaMemcpyDeviceToHost);
+		cudaMemcpy(cumsum, d_cumsum+1, sizeof(float) * N, cudaMemcpyDeviceToHost);
 #endif
 		// Create random data for resampling
 		for (int i = 0; i < N; i++) {
 			randomUniformData[i] = uniform_resamp(generator);
 		}
 		cudaMemcpy(d_randomUniformData, randomUniformData, sizeof(float) * N, cudaMemcpyHostToDevice);
-		resample << <N, 32 >> >(d_randomUniformData, d_cumsum, d_x_p, d_x_p_update);
+		resample << <N, 32 >> >(d_randomUniformData, d_cumsum+1, d_x_p, d_x_p_update);
 		int sharedMemSumSize = THREADS_SUM * sizeof(float);
 		sum << <1, THREADS_SUM, sharedMemSumSize >> >(d_x_p, N, d_sum);
 		float sum;
@@ -342,6 +335,7 @@ int main()
 	nvtxRangePop();
 	nvtxRangePop();
 	
+	cumulativeSumFree();
 	cudaFree(d_cumsum);
 	cudaFree(d_p_w);
 	cudaFree(d_randomProcessData);
